@@ -95,6 +95,16 @@ export const readClientRegistrationStatuses = async (
           XDG_CONFIG_HOME: options.environment.XDG_CONFIG_HOME,
         },
   )) {
+    if (client.configPathError !== undefined) {
+      statuses.push({
+        client: client.name,
+        config_path: client.configPath,
+        command: [],
+        state: "invalid",
+        remediation: client.configPathError,
+      });
+      continue;
+    }
     if (
       !(await exists(client.markerPath)) &&
       !(await exists(client.configPath))
@@ -181,9 +191,9 @@ const registrationAligned = (
   )
     return false;
   if (client.format === "vscode" && registration.type !== "stdio") return false;
-  // OMP infers stdio for a command entry without an explicit type.
+  // OMP and Pi infer stdio for a command entry without an explicit type.
   if (
-    client.format === "omp" &&
+    (client.format === "omp" || client.format === "pi") &&
     registration.type !== undefined &&
     registration.type !== "stdio"
   )
@@ -245,7 +255,7 @@ const parseRegistration = (
   if (client.format === "commandcode" && registration.transport !== "stdio")
     throw new TypeError("Expected an stdio registration");
   if (
-    client.format === "omp" &&
+    (client.format === "omp" || client.format === "pi") &&
     registration.type !== undefined &&
     registration.type !== "stdio"
   )
