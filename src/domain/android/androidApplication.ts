@@ -1,30 +1,27 @@
-import { createHash } from "node:crypto";
-
-import canonicalize from "canonicalize";
 import { z } from "zod";
 
 import { parseArtifactInventoryEvidence } from "../artifactInventoryEvidence.js";
-import { evidenceSchema } from "../evidence.js";
 import { digestSchema } from "../digests.js";
 import { prefixedDigestSchema } from "../digests.js";
 import {
+  applicationInventoryProjectionInputSchema,
   bridgeCandidateCoverageSchema,
+  compareProjectionStrings,
   projectCartesianCandidates,
-} from "../bridgeCandidateProjection.js";
+  projectedBridgeCandidateSchema,
+  projectedComponentSchema,
+  projectedComponents,
+  projectionCoverage,
+  projectionDigest,
+  projectionEvidenceIdSchema,
+} from "../mobileApplicationGraphProjection.js";
 
-const evidenceIdSchema = prefixedDigestSchema("ev");
-const pathSchema = z.string().min(1);
-const componentSchema = z.strictObject({
-  path: pathSchema,
-  artifact_id: prefixedDigestSchema("art"),
-  sha256: digestSchema,
-  format: z.string().min(1),
-});
+const evidenceIdSchema = projectionEvidenceIdSchema;
+const componentSchema = projectedComponentSchema;
 
 /** Authenticated APK inventory pages projected as one Android application. */
-export const androidApplicationProjectionInputSchema = z.strictObject({
-  inventory_evidence: z.array(evidenceSchema).min(1),
-});
+export const androidApplicationProjectionInputSchema =
+  applicationInventoryProjectionInputSchema;
 
 /** Deterministic, execution-free Android application inventory projection. */
 export const androidApplicationProjectionResultSchema = z.strictObject({
@@ -53,17 +50,13 @@ export const androidApplicationProjectionResultSchema = z.strictObject({
     ]),
   ),
   bridge_candidates: z.array(
-    z.strictObject({
-      managed_path: pathSchema,
-      native_path: pathSchema,
-      basis: z.enum([
-        "managed-and-native-content",
-        "jni-library-convention",
-        "react-native-convention",
-        "flutter-convention",
-        "unity-convention",
-      ]),
-    }),
+    projectedBridgeCandidateSchema([
+      "managed-and-native-content",
+      "jni-library-convention",
+      "react-native-convention",
+      "flutter-convention",
+      "unity-convention",
+    ] as const),
   ),
   bridge_candidate_coverage: bridgeCandidateCoverageSchema,
   coverage: z.strictObject({
@@ -91,27 +84,7 @@ export const projectAndroidApplication = (
   );
   if (inventory.manifest.root_format !== "apk")
     throw new TypeError("Android application projection requires APK Evidence");
-  const nodes = new Map(
-    inventory.nodes.map((node) => [node.artifact_id, node]),
-  );
-  const all = inventory.occurrences
-    .filter(
-      (occurrence) =>
-        occurrence.artifact_id !== null && occurrence.logical_path !== ".",
-    )
-    .map((occurrence) => {
-      const node = nodes.get(occurrence.artifact_id ?? "");
-      if (node === undefined)
-        throw new TypeError(
-          "Android application occurrence has no artifact node",
-        );
-      return {
-        path: occurrence.logical_path,
-        artifact_id: node.artifact_id,
-        sha256: node.sha256,
-        format: occurrence.artifact_format,
-      } satisfies Component;
-    });
+  const all = projectedComponents(inventory);
   const classified = classify(all);
   const bridgeProjection = bridgeCandidates(
     [...classified.dex, ...classified.jvm_classes],
@@ -136,23 +109,20 @@ export const projectAndroidApplication = (
     root_format: "apk" as const,
     source_evidence_ids: evidence
       .map(({ evidence_id: id }) => id)
-      .sort(compare),
+      .sort(compareProjectionStrings),
     components,
     runtime_families: runtimeFamilies(all),
     bridge_candidates: bridgeProjection.candidates,
     bridge_candidate_coverage: bridgeProjection.coverage,
-    coverage: {
-      status:
-        inventory.complete && bridgeProjection.coverage.status === "complete"
-          ? ("complete-within-inventory" as const)
-          : ("partial" as const),
-      inventory_complete: inventory.complete,
-    },
+    coverage: projectionCoverage(
+      inventory,
+      bridgeProjection.coverage.status === "complete",
+    ),
     limitations,
   };
   return androidApplicationProjectionResultSchema.parse({
     ...withoutId,
-    projection_id: `adp_${digest(withoutId)}`,
+    projection_id: `adp_${projectionDigest(withoutId, "Android application projection")}`,
   });
 };
 
@@ -215,7 +185,7 @@ const runtimeFamilies = (all: readonly Component[]) => {
   if (paths.some((path) => path.includes("libflutter.so")))
     families.add("flutter");
   if (paths.some((path) => path.includes("libunity.so"))) families.add("unity");
-  return [...families].sort(compare);
+  return [...families].sort(compareProjectionStrings);
 };
 
 const bridgeCandidates = (
@@ -242,13 +212,4 @@ const bridgeBasis = (
   if (lower.includes("unity")) return "unity-convention";
   if (/lib\/[^/]+\/lib[^/]+\.so$/u.test(lower)) return "jni-library-convention";
   return "managed-and-native-content";
-};
-
-const compare = (left: string, right: string): number =>
-  left < right ? -1 : left > right ? 1 : 0;
-const digest = (value: unknown): string => {
-  const encoded = canonicalize(value);
-  if (encoded === undefined)
-    throw new TypeError("Android application projection is not canonical JSON");
-  return createHash("sha256").update(encoded).digest("hex");
 };
